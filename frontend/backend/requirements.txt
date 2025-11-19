@@ -1,0 +1,7 @@
+fastapi[all]
+uvicorn
+python-multipart
+google-adk
+pytesseract
+pillow
+python-dotenv
