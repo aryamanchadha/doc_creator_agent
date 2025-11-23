@@ -2,16 +2,17 @@ import os
 import base64
 import uuid
 import re
+import shutil
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File
+from typing import List
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
-import pytesseract
-from PIL import Image
-import io
 from dotenv import load_dotenv
 from google.adk.agents import Agent
+from PIL import Image
+import pytesseract
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,6 +20,33 @@ load_dotenv()
 # Check if the API key is set
 if not os.getenv("GOOGLE_API_KEY"):
     raise ValueError("GOOGLE_API_KEY not found in .env file")
+
+
+def configure_tesseract():
+    """Validate that the Tesseract binary is available and allow overrides.
+
+    We avoid raising at import time so the server can still boot and return a
+    clearer runtime error with platform-specific guidance.
+    """
+    custom_tesseract_cmd = os.getenv("TESSERACT_CMD")
+    if custom_tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = custom_tesseract_cmd
+
+    tesseract_in_path = shutil.which(pytesseract.pytesseract.tesseract_cmd)
+    if not tesseract_in_path:
+        # Log a warning but allow the app to start; requests will return a clear
+        # HTTP error if Tesseract is still missing at runtime.
+        print(
+            "Warning: Tesseract OCR binary not found. Install Tesseract and "
+            "ensure it is on your PATH or set TESSERACT_CMD to the full "
+            "executable path (e.g., C:\\Program Files\\Tesseract-OCR\\tesseract.exe)."
+        )
+        return False
+
+    return True
+
+
+TESSERACT_AVAILABLE = configure_tesseract()
 
 app = FastAPI()
 
@@ -109,7 +137,23 @@ async def create_upload_files(files: List[UploadFile] = File(...)):
         image_paths.append(file_path)
 
         image = Image.open(file_path)
-        text = pytesseract.image_to_string(image)
+        try:
+            if not TESSERACT_AVAILABLE and not shutil.which(
+                pytesseract.pytesseract.tesseract_cmd
+            ):
+                raise pytesseract.TesseractNotFoundError()
+
+            text = pytesseract.image_to_string(image)
+        except pytesseract.TesseractNotFoundError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Tesseract OCR binary is missing. Install Tesseract and ensure it "
+                    "is on your PATH or set TESSERACT_CMD to its full path "
+                    "(e.g., C:\\Program Files\\Tesseract-OCR\\tesseract.exe)."
+                ),
+            ) from exc
+
         timestamp = extract_timestamp(text)
 
         messages.append({"text": text, "timestamp": timestamp, "filename": file.filename})
